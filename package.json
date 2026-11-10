@@ -1,0 +1,20 @@
+{
+  "name": "yuhui-station",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fontsource/zcool-qingke-huangyou": "^5.2.0",
+    "three": "^0.183.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.183.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.1"
+  }
+}
