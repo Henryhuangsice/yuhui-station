@@ -84,6 +84,7 @@ yuhui-station/
 - 当前跨设备联机尚未接入；同电脑多标签页可以互见。
 - 美术为程序拼搭的基础几何，后续可替换为正式模型与贴图。
 - 面向公众上线前需自行处理域名、备案与内容合规。
+- 更完整的产品与技术说明见 [REPORT.md](./REPORT.md)。
 
 ---
 
@@ -142,6 +143,7 @@ Append `?dev` to shorten idle timers while testing.
 - Cross-device multiplayer is not wired yet; multi-tab presence works locally.
 - Art is procedural geometry for a fast first ship; assets can be swapped later.
 - Handle hosting, compliance, and content rules before a public launch.
+- Full product & technical write-up: [REPORT.md](./REPORT.md).
 
 ---
 
