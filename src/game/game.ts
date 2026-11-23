@@ -14,7 +14,10 @@ import { Store, RULES, todayKey } from '../state/save';
 import { Presence, MAX_WORLD, type Anim } from '../net/presence';
 import { UI, EMOJIS, type ChecklistItem } from '../ui/ui';
 import { Tag } from '../ui/tags';
-import { NPCS, QUESTS, type NpcDef } from '../data/npcs';
+import { NPCS, QUESTS, type NpcDef, type QuestDef } from '../data/npcs';
+import { askAI } from '../ai/client';
+import { CRISIS_LINES, MAX_INPUT, fallbackLetter, isCrisis, type AiFortune, type AiLetter, type AiResponse } from '../ai/shared';
+import type { MailQuest } from '../state/save';
 import { rollCard, type Card } from '../data/gacha';
 import { FORTUNES, WISHES, realmOf, rollPill, type PillKind } from '../data/rituals';
 
@@ -152,6 +155,12 @@ export class Game {
   private colliders: Collider[] = [];
   private sendClock = 0;
   private arrivals = 0;
+
+  /** AI 解签: the question typed before shaking, and the request already in flight. */
+  private pendingFortune: { ask: string; p: Promise<AiResponse<AiFortune>> } | null = null;
+  private fortuneAsked = false;
+  /** 心事邮差: a letter is being sorted (request in flight). */
+  private mailPending = false;
 
   constructor(private host: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -370,7 +379,7 @@ export class Game {
       { text: '在余晖寺上一炷香', sub: d.incense ? `一共上了 ${d.incense} 炷` : '寺在南边，顺着石板路往下走', state: d.incense ? 'done' : 'todo' },
       { text: '敲木鱼', sub: `功德 ${d.merit}`, state: d.merit ? 'done' : 'todo' },
       { text: '在蒲团上拜一拜', sub: `一共拜了 ${d.bows} 拜`, state: d.bows ? 'done' : 'todo' },
-      { text: '求一支签', sub: fortuneToday ? `今天是${FORTUNES[d.fortune!.index].no}` : '一天一支', state: fortuneToday ? 'done' : 'todo' },
+      { text: '求一支签', sub: fortuneToday ? `今天是${d.fortune!.custom?.no ?? FORTUNES[d.fortune!.index].no}` : '一天一支，可以先写下想问的事', state: fortuneToday ? 'done' : 'todo' },
       { text: '在晚钟教堂点一支蜡烛', sub: d.candles ? `一共点了 ${d.candles} 支` : '教堂在北坡上，尖顶很好认', state: d.candles ? 'done' : 'todo' },
       { text: '跪下来祈祷一次', sub: `祈祷过 ${d.prayers} 次`, state: d.prayers ? 'done' : 'todo' },
       { text: '在云栖观的太极图上打坐', sub: `修为 ${d.cultivation} · ${realm.name}`, state: d.cultivation ? 'done' : 'todo' },
@@ -388,6 +397,14 @@ export class Game {
         state,
       });
     }
+    const mail = d.mail.quest;
+    items.push(
+      mail
+        ? { text: `把【${mail.item}】交给${name(mail.to).name}`, sub: `${name(mail.to).title} · 你投的心事`, state: 'doing' }
+        : this.store.mailToday
+          ? { text: '投一封心事', sub: this.mailPending ? '老周正在分信' : '今天的已经送到了', state: this.mailPending ? 'doing' : 'done' }
+          : { text: '找站长老周投一封心事', sub: '一天一封，会变成一次跑腿', state: 'todo' },
+    );
     const tally = `今天 · 跑腿零钱 ${d.earned.tasks}/${RULES.taskCap} · 发呆零钱 ${d.earned.idle}/${RULES.idleCap} · 抽取 ${d.draws.count}/${RULES.dailyCap}`;
     return { items, tally };
   }
@@ -634,9 +651,14 @@ export class Game {
     if (spot.kind === 'fortune') {
       const today = this.store.data.fortune;
       if (today && today.day === todayKey()) {
-        this.ui.showFortune(FORTUNES[today.index], false);
+        this.showTodayFortune();
         return;
       }
+      if (!this.fortuneAsked) {
+        void this.askFortune(spot);
+        return;
+      }
+      this.fortuneAsked = false;
     }
     this.begin(spot.kind, spot.dir, spot.fwd, spot.h, spot.h, { spot, pose: a.pose, gesture: a.gesture, idle: a.idle });
     this.me.avatar.setProp(a.prop);
@@ -777,7 +799,10 @@ export class Game {
           this.audio.play('stick');
           const { index, fresh } = this.store.fortuneToday(() => Math.floor(Math.random() * FORTUNES.length));
           this.endActivity();
-          this.ui.showFortune(FORTUNES[index], fresh);
+          const pending = this.pendingFortune;
+          this.pendingFortune = null;
+          if (pending && fresh) void this.revealFortune(pending, index);
+          else this.ui.showFortune(FORTUNES[index], fresh);
         }
         break;
       }
@@ -1007,14 +1032,16 @@ export class Game {
   }
 
   private updateNpcs(dt: number) {
-    const active = QUESTS.find((q) => q.id === this.store.data.quests.active);
+    const active = this.activeQuest();
     const done = this.store.data.quests.done;
+    const mailOpen = !active && !this.mailPending && !this.store.mailToday && this.store.data.wardrobe.length > 0;
     for (const n of this.npcs) {
       const want = n.talking ? projectTangent(this.me.dir.clone().sub(n.dir), n.dir).normalize() : n.home;
       if (!n.def.sit && want.lengthSq() > 0.5) n.fwd.lerp(want, 1 - Math.exp(-dt * 5)).normalize();
       let mark: 'quest' | 'deliver' | null = null;
       if (active?.to === n.def.id) mark = 'deliver';
       else if (!active && QUESTS.some((q) => q.from === n.def.id && !done.includes(q.id))) mark = 'quest';
+      else if (mailOpen && n.def.id === 'zhou') mark = 'quest';
       n.tag.setMark(mark);
       if (!n.def.sit) {
         n.ground = resolveCollisions(this.colliders, n.dir.clone(), 5);
@@ -1190,7 +1217,7 @@ export class Game {
     const def = n.def;
     const say = (lines: string[], opts: string[] = []) => this.ui.dialog(def.name, def.title, lines, opts);
     const d = this.store.data;
-    const active = QUESTS.find((q) => q.id === d.quests.active);
+    const active = this.activeQuest();
     const own = QUESTS.find((q) => q.from === def.id && !d.quests.done.includes(q.id));
     const npcName = (id: string) => NPCS.find((x) => x.id === id)!.name;
 
@@ -1198,7 +1225,9 @@ export class Game {
       await say(['新来的？', '先去站台东头那台红色【盲盒机】扭一个自己。首夜送你三次，抽到的都算数。', '扭完了，就随便走走。往南有寺，北坡有教堂，南边山里还有道观。']);
     } else if (active && active.to === def.id) {
       await say(active.thanks);
-      this.store.finishQuest(active.id);
+      const mail = d.mail.quest?.id === active.id ? d.mail.quest : null;
+      if (mail) this.store.finishMail();
+      else this.store.finishQuest(active.id);
       if (active.flag) {
         this.store.setFlag(active.flag);
         if (active.flag === 'mint') this.world.mint.visible = true;
@@ -1211,6 +1240,12 @@ export class Game {
         this.ui.toast(`送到了 · +${got} 零钱券`);
       } else this.ui.toast('送到了 · 今天的跑腿零钱已经攒满');
       this.ui.notify('checklist', true);
+      if (mail) {
+        const tag = mail.source === 'ai' ? '回信由 AI 根据你的心事写成' : 'AI 未接通 · 这是一封手写的回信';
+        setTimeout(() => this.ui.showLetter(mail.item, mail.reply, mail.ask, tag), 600);
+      }
+    } else if (def.id === 'zhou' && d.wardrobe.length) {
+      await this.talkMail(def, say);
     } else if (own && !active) {
       const choice = await say(own.offer, ['好，我带过去', '下次吧']);
       if (choice === 0) {
@@ -1228,6 +1263,109 @@ export class Game {
     }
     n.talking = false;
     this.input.locked = this.ui.modalOpen;
+  }
+
+  /** The errand in hand: a scripted quest or today's 心事 letter. */
+  private activeQuest(): QuestDef | null {
+    const d = this.store.data;
+    const fixed = QUESTS.find((q) => q.id === d.quests.active);
+    if (fixed) return fixed;
+    const m = d.mail.quest;
+    return m && m.id === d.quests.active ? { id: m.id, from: 'zhou', to: m.to, item: m.item, offer: m.offer, thanks: m.thanks } : null;
+  }
+
+  // ------------------------------------------------------------ AI 解签
+
+  private async askFortune(spot: Spot) {
+    this.input.locked = true;
+    const text = await this.ui.ask('摇签之前', '心里想问的事，可以写下来。不写也行，就随缘摇一支。', '比如：下周的答辩能顺利吗？', MAX_INPUT, '开始摇签');
+    this.input.locked = this.ui.modalOpen;
+    if (text === null) return;
+    this.pendingFortune = text ? { ask: text, p: askAI<AiFortune>({ task: 'fortune', text }) } : null;
+    this.fortuneAsked = true;
+    this.startSpot(spot);
+  }
+
+  private async revealFortune(pending: { ask: string; p: Promise<AiResponse<AiFortune>> }, index: number) {
+    const slow = setTimeout(() => this.ui.toast('签文还在慢慢浮出来……', 3000), 400);
+    const r = await pending.p;
+    clearTimeout(slow);
+    if (r.source === 'safety') {
+      this.input.locked = true;
+      await this.ui.dialog('慧明师父', '余晖寺', CRISIS_LINES);
+      this.input.locked = this.ui.modalOpen;
+      this.ui.showFortune(FORTUNES[index], true);
+      return;
+    }
+    if (r.source === 'ai' && r.data) {
+      const custom = { no: '心签', ...r.data };
+      this.store.setCustomFortune(custom, pending.ask, 'ai');
+      this.ui.showFortune(custom, true, { ask: pending.ask, tag: 'AI 解签 · 根据你写下的事生成' });
+      return;
+    }
+    this.store.setCustomFortune(FORTUNES[index], pending.ask, 'fallback');
+    this.ui.showFortune(FORTUNES[index], true, { ask: pending.ask, tag: `AI 未接通，签筒随缘（${r.reason ?? 'unknown'}）` });
+  }
+
+  private showTodayFortune() {
+    const f = this.store.data.fortune!;
+    const tag = f.source === 'ai' ? 'AI 解签 · 根据你写下的事生成' : undefined;
+    this.ui.showFortune(f.custom ?? FORTUNES[f.index], false, { ask: f.ask, tag });
+  }
+
+  // ------------------------------------------------------------ 心事邮差
+
+  private async talkMail(def: NpcDef, say: (lines: string[], opts?: string[]) => Promise<number>) {
+    const npcName = (id: string) => NPCS.find((x) => x.id === id)!.name;
+    const active = this.activeQuest();
+    if (this.mailPending) {
+      await say(['信还在分。', '班车跑一圈的工夫就好，你先随便走走。']);
+      return;
+    }
+    if (active) {
+      await say([pick(def.idle), `你手上还有给${npcName(active.to)}的东西，送完再来投信吧。`]);
+      return;
+    }
+    if (this.store.mailToday) {
+      await say([pick(def.idle), '今天的心事信箱已经收过你一封了。明天再来。']);
+      return;
+    }
+    const choice = await say(
+      [pick(def.idle), '对了，我这儿兼做「心事邮差」，一天收一封。', '写一句今天的烦心事，我帮你找个合适的人，把它送走。'],
+      ['投一封心事', '下次吧'],
+    );
+    if (choice !== 0) return;
+    const text = await this.ui.ask('心事邮差', '写一句今天的烦心事。不署名，原话只有你和老周知道。', '比如：方案又被退回了，第三次。', MAX_INPUT);
+    if (!text) return;
+    if (isCrisis(text)) {
+      await say(CRISIS_LINES);
+      return;
+    }
+    this.store.reserveMail();
+    this.mailPending = true;
+    const sorting = this.sortMail(text);
+    await say(['收到了。', '我看看该交给谁。班车跑一圈的工夫就分好，你先随便走走。']);
+    void sorting;
+  }
+
+  private async sortMail(text: string) {
+    const t0 = performance.now();
+    const r = await askAI<AiLetter>({ task: 'letter', text, avoid: (this.store.data.mail.recent ?? []).slice(0, 2) });
+    // Sorting should feel like a short wait, even when the answer is instant.
+    const wait = 3500 - (performance.now() - t0);
+    if (wait > 0) await new Promise((ok) => setTimeout(ok, wait));
+    this.mailPending = false;
+    if (r.source === 'safety') {
+      this.store.releaseMail();
+      this.ui.toast('老周把那封信收起来了。去站台找他坐一会儿吧。', 4200);
+      return;
+    }
+    const letter = r.source === 'ai' && r.data ? r.data : fallbackLetter(text);
+    const q: MailQuest = { id: `mail-${Date.now()}`, ask: text, ...letter, source: r.source === 'ai' ? 'ai' : 'fallback' };
+    this.store.startMail(q);
+    this.audio.play('quest');
+    this.ui.toast(`老周分好信了：【${q.item}】→ ${NPCS.find((n) => n.id === q.to)!.name}`, 4600);
+    this.ui.notify('checklist', true);
   }
 
   private toScreen(v: THREE.Vector3) {

@@ -645,16 +645,92 @@ export class UI {
     }, ms);
   }
 
-  showFortune(f: Fortune, fresh: boolean) {
+  showFortune(f: Fortune, fresh: boolean, extra: { ask?: string; tag?: string } = {}) {
     this.closePanel();
     const backdrop = el('div', 'backdrop');
     const p = el('div', 'panel paper modal fortune');
     p.innerHTML = `
+      ${extra.ask ? `<p class="ask">所问 · ${esc(extra.ask)}</p>` : ''}
       <div class="lot"><span>${esc(f.no)}</span><b class="lv lv-${f.level}">${esc(f.level)}签</b></div>
       <div class="poem">${f.poem.map((l) => `<p>${esc(l)}</p>`).join('')}</div>
       <div class="read"><b>解签</b>${esc(f.read)}</div>
-      <p class="sub" style="text-align:center">${fresh ? '一天只求一签。明天再来，会是新的。' : '今天已经求过了，签还是这一支。'}</p>`;
+      <p class="sub" style="text-align:center">${fresh ? '一天只求一签。明天再来，会是新的。' : '今天已经求过了，签还是这一支。'}</p>
+      ${extra.tag ? `<p class="ai-tag">${esc(extra.tag)}</p>` : ''}`;
     const ok = el('button', 'btn', '收下');
+    const row = el('div', 'gacha-actions');
+    row.append(ok);
+    p.append(row);
+    const close = () => {
+      p.remove();
+      backdrop.remove();
+      this.extraModal = false;
+      this.h.onPanel(false);
+      this.audio.play('close');
+    };
+    ok.onclick = close;
+    backdrop.onclick = close;
+    this.hud.append(backdrop, p);
+    this.extraModal = true;
+    this.h.onPanel(true);
+    this.audio.play('open');
+  }
+
+  /** A small paper modal with a text box. Resolves to the trimmed text, '' if left empty, or null if cancelled. */
+  ask(title: string, hint: string, placeholder: string, maxLen: number, okLabel = '投进去'): Promise<string | null> {
+    this.closePanel();
+    return new Promise((resolve) => {
+      const backdrop = el('div', 'backdrop');
+      const p = el('div', 'panel paper modal ask-modal');
+      p.innerHTML = `<h3>${esc(title)}</h3><p class="sub">${esc(hint)}</p>`;
+      const box = document.createElement('textarea');
+      box.maxLength = maxLen;
+      box.rows = 3;
+      box.placeholder = placeholder;
+      const count = el('div', 'count', `0/${maxLen}`);
+      box.oninput = () => (count.textContent = `${[...box.value].length}/${maxLen}`);
+      box.onkeydown = (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          done(box.value.trim());
+        } else if (e.key === 'Escape') done(null);
+      };
+      box.onkeyup = (e) => e.stopPropagation();
+      const ok = el('button', 'btn', esc(okLabel));
+      const cancel = el('button', 'btn ghost', '算了');
+      const row = el('div', 'gacha-actions');
+      row.append(cancel, ok);
+      p.append(box, count, row);
+      const done = (v: string | null) => {
+        p.remove();
+        backdrop.remove();
+        this.extraModal = false;
+        this.h.onPanel(false);
+        this.audio.play('close');
+        resolve(v);
+      };
+      ok.onclick = () => done(box.value.trim());
+      cancel.onclick = () => done(null);
+      backdrop.onclick = () => done(null);
+      this.hud.append(backdrop, p);
+      this.extraModal = true;
+      this.h.onPanel(true);
+      this.audio.play('open');
+      setTimeout(() => box.focus(), 50);
+    });
+  }
+
+  /** The reply letter a resident writes back after a 心事 delivery. */
+  showLetter(item: string, body: string, ask: string, tag: string) {
+    this.closePanel();
+    const backdrop = el('div', 'backdrop');
+    const p = el('div', 'panel paper modal letter');
+    p.innerHTML = `
+      <p class="ask">你投的心事 · ${esc(ask)}</p>
+      <p class="sub">它变成了「${esc(item)}」，现在送到了。</p>
+      <div class="letter-body">${esc(body)}</div>
+      <p class="ai-tag">${esc(tag)}</p>`;
+    const ok = el('button', 'btn', '收好');
     const row = el('div', 'gacha-actions');
     row.append(ok);
     p.append(row);

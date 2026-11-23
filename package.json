@@ -9,11 +9,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.12.0",
     "@fontsource/zcool-qingke-huangyou": "^5.2.0",
-    "three": "^0.183.0"
+    "three": "^0.183.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
     "@types/three": "^0.183.0",
+    "playwright-core": "^1.65.1",
     "typescript": "~5.9.3",
     "vite": "^7.3.1"
   }

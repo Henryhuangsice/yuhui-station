@@ -1,4 +1,6 @@
 import { rollCard, type Card } from '../data/gacha';
+import type { Fortune } from '../data/rituals';
+import type { AiSource } from '../ai/shared';
 
 export const RULES = {
   firstNight: 3,
@@ -33,7 +35,28 @@ export interface SaveData {
   prayers: number;
   cultivation: number;
   pills: number;
-  fortune: { day: string; index: number } | null;
+  fortune: { day: string; index: number; custom?: Fortune; ask?: string; source?: AiSource } | null;
+  mail: MailState;
+}
+
+/** 心事邮差: one worry a day becomes one errand. */
+export interface MailQuest {
+  id: string;
+  ask: string;
+  item: string;
+  to: string;
+  offer: string[];
+  thanks: string[];
+  reply: string;
+  source: AiSource;
+}
+
+export interface MailState {
+  day: string | null;
+  quest: MailQuest | null;
+  delivered: number;
+  /** Recent recipients, newest first. */
+  recent?: string[];
 }
 
 export type Counter = 'merit' | 'bows' | 'incense' | 'candles' | 'prayers' | 'cultivation' | 'pills';
@@ -69,6 +92,7 @@ function fresh(): SaveData {
     cultivation: 0,
     pills: 0,
     fortune: null,
+    mail: { day: null, quest: null, delivered: 0 },
   };
 }
 
@@ -228,5 +252,41 @@ export class Store {
     this.data.fortune = { day, index };
     this.commit();
     return { index, fresh: true };
+  }
+
+  /** Attach a personalised (AI or fallback) fortune to today's stick. */
+  setCustomFortune(custom: Fortune, ask: string, source: AiSource) {
+    if (!this.data.fortune) return;
+    Object.assign(this.data.fortune, { custom, ask, source });
+    this.commit();
+  }
+
+  get mailToday() {
+    return this.data.mail.day === todayKey();
+  }
+
+  /** Reserve today's letter before the request goes out, so it cannot be sent twice. */
+  reserveMail() {
+    this.data.mail.day = todayKey();
+    this.commit();
+  }
+
+  releaseMail() {
+    this.data.mail.day = null;
+    this.commit();
+  }
+
+  startMail(q: MailQuest) {
+    this.data.mail.recent = [q.to, ...(this.data.mail.recent ?? []).filter((id) => id !== q.to)].slice(0, 3);
+    this.data.mail.quest = q;
+    this.data.quests.active = q.id;
+    this.commit();
+  }
+
+  finishMail() {
+    this.data.mail.quest = null;
+    this.data.mail.delivered += 1;
+    this.data.quests.active = null;
+    this.commit();
   }
 }
